@@ -144,11 +144,20 @@ model Creditor {
   
   // Kontierung
   defaultAccount  String? // Standard-Sachkonto für diesen Kreditor
+  creditorAccount String? // Kreditorenkonto (aus Kontenplan.csv)
   paymentTerms    Int? // Zahlungsziel in Tagen
+  
+  // Erweiterte Daten aus Kontenplan.csv
+  accountCode     String? // Kontonummer falls direkter Eintrag im Kontenplan
+  isFromKontenplan Boolean @default(false) // Stammt aus Kontenplan.csv
   
   // Metadaten
   isActive        Boolean @default(true)
   notes           String?
+  
+  // Templates und Verarbeitungslogik
+  preferredTemplate String? // FAMO, SONEPAR, etc.
+  keywords        String? // Komma-getrennte Keywords für Erkennung
   
   // Beziehungen
   invoices        Invoice[]

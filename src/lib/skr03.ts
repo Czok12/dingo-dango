@@ -251,99 +251,275 @@ export interface AccountingContext {
 }
 
 /**
- * Accounting Logic Engine (ALE) - Generiert vollständige Buchungssatz-Vorschläge
+ * Erweiterte Accounting Logic Engine (ALE) - Generiert vollständige Buchungssatz-Vorschläge
+ * basierend auf Kontenplan.csv und Kreditor-Datenbank
  */
 export function generateBookingProposal(context: AccountingContext): BookingProposal | null {
   try {
-    // 1. Sachkonto ermitteln
-    const suggestedAccount = suggestSKR03Account(context.extractedText, context.supplierName);
+    console.log('🔧 Starte Buchungssatz-Generierung...');
+    
+    // 1. Sachkonto ermitteln (erweiterte Logik)
+    const suggestedAccount = suggestSKR03AccountAdvanced(context);
     
     if (!suggestedAccount) {
-      console.log('Kein passendes Sachkonto gefunden');
+      console.log('❌ Kein passendes Sachkonto gefunden');
       return null;
     }
 
-    // 2. Kreditorenkonto ermitteln
-    const creditorAccount = determineCreditorAccount(context);
+    // 2. Kreditorenkonto ermitteln (erweiterte Logik)
+    const creditorAccount = determineCreditorAccountAdvanced(context);
     
-    // 3. Buchungssatz zusammenstellen
+    // 3. Automatische MwSt.-Behandlung
+    const vatDetails = calculateVATDetails(context);
+    
+    // 4. Buchungssatz zusammenstellen
     const proposal: BookingProposal = {
       debitAccount: suggestedAccount.code, // Soll: Sachkonto (Aufwand)
       creditAccount: creditorAccount, // Haben: Kreditorenkonto
       amount: context.invoiceAmount,
-      vatAmount: context.vatAmount,
-      vatRate: context.vatRate,
+      vatAmount: vatDetails.vatAmount,
+      vatRate: vatDetails.vatRate,
       creditorId: context.creditorId,
-      bookingText: generateBookingText(context, suggestedAccount),
-      confidence: calculateBookingConfidence(context, suggestedAccount),
-      explanation: generateBookingExplanation(context, suggestedAccount, creditorAccount)
+      bookingText: generateBookingTextAdvanced(context, suggestedAccount),
+      confidence: calculateBookingConfidenceAdvanced(context, suggestedAccount),
+      explanation: generateBookingExplanationAdvanced(context, suggestedAccount, creditorAccount, vatDetails)
     };
 
-    // 4. Template-spezifische Anpassungen
-    applyTemplateSpecificLogic(proposal, context);
+    // 5. Template-spezifische und creditor-spezifische Anpassungen
+    applyAdvancedBusinessLogic(proposal, context);
 
-    console.log(`Buchungssatz-Vorschlag generiert: ${proposal.debitAccount} an ${proposal.creditAccount}`);
+    console.log(`✅ Buchungssatz-Vorschlag: ${proposal.debitAccount} an ${proposal.creditAccount}, ${proposal.amount}€, Confidence: ${proposal.confidence}%`);
     return proposal;
 
   } catch (error) {
-    console.error('Fehler bei der Buchungssatz-Generierung:', error);
+    console.error('❌ Fehler bei der Buchungssatz-Generierung:', error);
     return null;
   }
 }
 
 /**
- * Ermittelt das passende Kreditorenkonto
+ * Erweiterte Sachkonto-Ermittlung mit Gewichtung und Kontenplan-Integration
  */
-function determineCreditorAccount(context: AccountingContext): string {
-  // Wenn Kreditor bekannt ist und ein Standard-Konto hat
+function suggestSKR03AccountAdvanced(context: AccountingContext): SKR03Account | null {
+  const searchText = `${context.extractedText} ${context.supplierName || ''}`.toLowerCase();
+  
+  // Kreditor-spezifische Konten haben Priorität
   if (context.defaultCreditorAccount) {
-    return context.defaultCreditorAccount;
-  }
-
-  // Template-spezifische Kreditorenkonten
-  if (context.template === 'FAMO') {
-    return '1600'; // FAMO-spezifisches Kreditorenkonto
+    const creditorAccount = getSKR03AccountByCode(context.defaultCreditorAccount);
+    if (creditorAccount) {
+      console.log(`🎯 Verwende Kreditor-Standard-Konto: ${creditorAccount.code}`);
+      return creditorAccount;
+    }
   }
   
-  if (context.template === 'SONEPAR') {
-    return '1610'; // Sonepar-spezifisches Kreditorenkonto
+  // Template-spezifische Logik
+  const templateAccount = getTemplateSpecificAccount(context, searchText);
+  if (templateAccount) {
+    return templateAccount;
   }
-
-  // Standard-Kreditorenkonto für unbekannte Lieferanten
-  return '1400'; // Verbindlichkeiten aus Lieferungen und Leistungen
+  
+  // Erweiterte Keyword-Suche mit Gewichtung
+  const weightedMatch = suggestSKR03AccountWithWeighting(
+    context.extractedText,
+    context.supplierName,
+    context.template
+  );
+  
+  if (weightedMatch && weightedMatch.score > 20) {
+    console.log(`📊 Bestes Konto (Score: ${weightedMatch.score}): ${weightedMatch.account.code}`);
+    return weightedMatch.account;
+  }
+  
+  // Fallback: Allgemeine Heuristik
+  return getAccountByBusinessLogic(context);
 }
 
 /**
- * Generiert einen aussagekräftigen Buchungstext
+ * Template-spezifische Konten-Ermittlung
  */
-function generateBookingText(context: AccountingContext, account: SKR03Account): string {
+function getTemplateSpecificAccount(context: AccountingContext, searchText: string): SKR03Account | null {
+  switch (context.template) {
+    case 'FAMO':
+      if (searchText.includes('wartung') || searchText.includes('reparatur')) {
+        return getSKR03AccountByCode('4800'); // Reparatur und Instandhaltung
+      }
+      if (searchText.includes('fahrzeug') || searchText.includes('kfz')) {
+        return getSKR03AccountByCode('4530'); // Fahrzeugkosten
+      }
+      break;
+      
+    case 'SONEPAR':
+      if (searchText.includes('elektro') || searchText.includes('kabel') || searchText.includes('material')) {
+        return getSKR03AccountByCode('3000'); // Wareneinkauf
+      }
+      break;
+  }
+  
+  return null;
+}
+
+/**
+ * Business-Logic-basierte Konto-Ermittlung
+ */
+function getAccountByBusinessLogic(context: AccountingContext): SKR03Account | null {
+  const searchText = context.extractedText.toLowerCase();
+  const supplierName = (context.supplierName || '').toLowerCase();
+  
+  // Behörden und Ämter
+  if (supplierName.includes('finanzamt')) {
+    return getSKR03AccountByCode('4320'); // Gewerbesteuer
+  }
+  if (supplierName.includes('handwerkskammer') || supplierName.includes('ihk')) {
+    return getSKR03AccountByCode('4380'); // Beiträge
+  }
+  
+  // Telekommunikation
+  if (supplierName.includes('telekom') || supplierName.includes('vodafone') || 
+      supplierName.includes('klarmobil') || searchText.includes('telefon')) {
+    return getSKR03AccountByCode('4920'); // Telefon
+  }
+  
+  // Online-Services
+  if (supplierName.includes('strato') || supplierName.includes('hosting') || 
+      searchText.includes('domain') || searchText.includes('server')) {
+    return getSKR03AccountByCode('4925'); // Internetkosten
+  }
+  
+  // E-Commerce
+  if (supplierName.includes('amazon') || supplierName.includes('galaxus') || 
+      supplierName.includes('notebooksbilliger')) {
+    if (searchText.includes('büro') || searchText.includes('papier') || searchText.includes('software')) {
+      return getSKR03AccountByCode('4930'); // Bürobedarf
+    }
+    return getSKR03AccountByCode('4980'); // Sonstiger Betriebsbedarf
+  }
+  
+  // Transport und Logistik
+  if (supplierName.includes('dhl') || supplierName.includes('ups') || 
+      supplierName.includes('hermes') || searchText.includes('versand')) {
+    return getSKR03AccountByCode('4910'); // Porto
+  }
+  
+  // Standard-Fallback
+  return getSKR03AccountByCode('4980'); // Sonstiger Betriebsbedarf
+}
+
+/**
+ * Erweiterte Kreditorenkonto-Ermittlung
+ */
+function determineCreditorAccountAdvanced(context: AccountingContext): string {
+  // 1. Spezifisches Kreditorenkonto aus Kontenplan
+  if (context.creditorId && context.defaultCreditorAccount) {
+    console.log(`🎯 Verwende spezifisches Kreditorenkonto: ${context.defaultCreditorAccount}`);
+    return context.defaultCreditorAccount;
+  }
+  
+  // 2. Template-spezifische Kreditorenkonten
+  const templateAccount = getTemplateCreditorAccount(context);
+  if (templateAccount) {
+    return templateAccount;
+  }
+  
+  // 3. Betragsspezifische Logik
+  if (context.invoiceAmount > 10000) {
+    return '1665'; // Verbindlichkeiten gegenüber Gesellschaftern (größere Beträge)
+  }
+  
+  // 4. Standard-Kreditorenkonto
+  return '1600'; // Verbindlichkeiten aus Lieferungen und Leistungen
+}
+
+/**
+ * Template-spezifische Kreditorenkonten
+ */
+function getTemplateCreditorAccount(context: AccountingContext): string | null {
+  if (!context.template || context.template === 'GENERIC') {
+    return null;
+  }
+  
+  // Hier könnten spezifische Kreditorenkonten für bekannte Templates definiert werden
+  // Beispiel: FAMO verwendet ein anderes Kreditorenkonto als Sonepar
+  
+  return null;
+}
+
+/**
+ * MwSt.-Berechnung und -Validierung
+ */
+function calculateVATDetails(context: AccountingContext): { vatAmount: number | undefined, vatRate: number | undefined } {
+  let vatAmount = context.vatAmount;
+  const vatRate = context.vatRate;
+  
+  // Automatische MwSt.-Berechnung falls fehlend
+  if (!vatAmount && vatRate && context.invoiceAmount) {
+    vatAmount = (context.invoiceAmount * vatRate) / (100 + vatRate);
+    console.log(`🧮 MwSt.-Betrag berechnet: ${vatAmount.toFixed(2)}€`);
+  }
+  
+  // MwSt.-Satz-Validierung
+  if (vatRate && ![0, 7, 19].includes(vatRate)) {
+    console.log(`⚠️ Ungewöhnlicher MwSt.-Satz: ${vatRate}%`);
+  }
+  
+  return { vatAmount, vatRate };
+}
+
+/**
+ * Erweiterte Buchungstext-Generierung
+ */
+function generateBookingTextAdvanced(context: AccountingContext, account: SKR03Account): string {
   const supplier = context.supplierName || 'Unbekannter Lieferant';
   const accountName = account.name;
   const date = new Date().toLocaleDateString('de-DE');
   
-  return `${accountName} - ${supplier} vom ${date}`;
+  // Template-spezifische Buchungstexte
+  if (context.template === 'FAMO') {
+    return `Fahrzeugwartung - ${supplier} vom ${date}`;
+  }
+  
+  if (context.template === 'SONEPAR') {
+    return `Elektromaterial - ${supplier} vom ${date}`;
+  }
+  
+  // Kategorie-spezifische Texte
+  switch (account.category) {
+    case 'Wareneinkauf':
+      return `Wareneinkauf - ${supplier} vom ${date}`;
+    case 'Büro':
+      return `Büromaterial - ${supplier} vom ${date}`;
+    case 'Kommunikation':
+      return `Telekommunikation - ${supplier} vom ${date}`;
+    case 'Instandhaltung':
+      return `Wartung/Reparatur - ${supplier} vom ${date}`;
+    default:
+      return `${accountName} - ${supplier} vom ${date}`;
+  }
 }
 
 /**
- * Berechnet die Confidence für den Buchungssatz-Vorschlag
+ * Erweiterte Confidence-Berechnung
  */
-function calculateBookingConfidence(context: AccountingContext, account: SKR03Account): number {
+function calculateBookingConfidenceAdvanced(context: AccountingContext, account: SKR03Account): number {
   let confidence = 0;
   let maxScore = 0;
 
-  // Sachkonto-Matching (40%)
-  maxScore += 40;
-  const keywordMatches = account.keywords.filter(keyword => 
-    context.extractedText.toLowerCase().includes(keyword.toLowerCase())
-  ).length;
-  confidence += Math.min(40, keywordMatches * 10);
+  // Sachkonto-Matching (35%)
+  maxScore += 35;
+  if (context.defaultCreditorAccount === account.code) {
+    confidence += 35; // Perfekter Match mit Kreditor-Standard
+  } else {
+    const keywordMatches = account.keywords.filter(keyword => 
+      context.extractedText.toLowerCase().includes(keyword.toLowerCase())
+    ).length;
+    confidence += Math.min(35, keywordMatches * 7);
+  }
 
-  // Kreditor-Identifikation (30%)
-  maxScore += 30;
+  // Kreditor-Identifikation (25%)
+  maxScore += 25;
   if (context.creditorId) {
-    confidence += 30;
+    confidence += 25;
   } else if (context.supplierName) {
-    confidence += 15;
+    confidence += 12;
   }
 
   // Template-Erkennung (20%)
@@ -363,57 +539,121 @@ function calculateBookingConfidence(context: AccountingContext, account: SKR03Ac
     confidence += 5;
   }
 
+  // Datenqualität-Bonus (10%)
+  maxScore += 10;
+  if (context.supplierTaxId) confidence += 5;
+  if (context.extractedText.length > 100) confidence += 5;
+
   return maxScore > 0 ? Math.round((confidence / maxScore) * 100) : 0;
 }
 
 /**
- * Generiert eine Erklärung für den Buchungssatz-Vorschlag
+ * Erweiterte Buchungssatz-Erklärung
  */
-function generateBookingExplanation(
+function generateBookingExplanationAdvanced(
   context: AccountingContext, 
   account: SKR03Account, 
-  creditorAccount: string
+  creditorAccount: string,
+  vatDetails: { vatAmount: number | undefined, vatRate: number | undefined }
 ): string {
   const explanations: string[] = [];
   
-  explanations.push(`Sachkonto ${account.code} (${account.name}) basierend auf Rechnungsinhalt`);
+  explanations.push(`Sachkonto ${account.code} (${account.name}) - ${account.category}`);
   explanations.push(`Kreditorenkonto ${creditorAccount} für ${context.supplierName || 'Lieferant'}`);
   
   if (context.template && context.template !== 'GENERIC') {
     explanations.push(`${context.template}-Template erkannt`);
   }
   
-  if (context.vatRate) {
-    explanations.push(`MwSt.-Satz: ${context.vatRate}%`);
+  if (context.defaultCreditorAccount) {
+    explanations.push(`Kreditor-Standard-Konto verwendet`);
+  }
+  
+  if (vatDetails.vatRate) {
+    explanations.push(`MwSt.: ${vatDetails.vatRate}% (${vatDetails.vatAmount?.toFixed(2) || 'N/A'}€)`);
   }
 
   return explanations.join(' | ');
 }
 
 /**
- * Wendet template-spezifische Buchungslogik an
+ * Erweiterte Business-Logik und Template-Anpassungen
  */
-function applyTemplateSpecificLogic(proposal: BookingProposal, context: AccountingContext): void {
+function applyAdvancedBusinessLogic(proposal: BookingProposal, context: AccountingContext): void {
+  // Template-spezifische Anpassungen
   switch (context.template) {
     case 'FAMO':
-      // FAMO-spezifische Anpassungen
-      if (context.extractedText.toLowerCase().includes('wartung')) {
-        proposal.debitAccount = '6320'; // Instandhaltung
-        proposal.bookingText = `Wartungsarbeiten - FAMO GmbH`;
-      }
+      applyFAMOLogic(proposal, context);
       break;
       
     case 'SONEPAR':
-      // Sonepar-spezifische Anpassungen
-      if (context.extractedText.toLowerCase().includes('elektro')) {
-        proposal.debitAccount = '6000'; // Wareneinkauf
-        proposal.bookingText = `Elektromaterial - Sonepar`;
-      }
+      applySoneparLogic(proposal, context);
       break;
-      
-    default:
-      // Keine spezifischen Anpassungen für generische Templates
-      break;
+  }
+  
+  // Allgemeine Business-Rules
+  applyGeneralBusinessRules(proposal, context);
+}
+
+/**
+ * FAMO-spezifische Geschäftslogik
+ */
+function applyFAMOLogic(proposal: BookingProposal, context: AccountingContext): void {
+  const searchText = context.extractedText.toLowerCase();
+  
+  if (searchText.includes('fahrzeugwartung') || searchText.includes('inspektion')) {
+    proposal.debitAccount = '4800'; // Reparatur und Instandhaltung
+    proposal.bookingText = `Fahrzeugwartung - FAMO GmbH`;
+    proposal.confidence = Math.min(proposal.confidence + 15, 100);
+  }
+  
+  if (searchText.includes('ersatzteile')) {
+    proposal.debitAccount = '3000'; // Wareneinkauf
+    proposal.bookingText = `Kfz-Ersatzteile - FAMO GmbH`;
+  }
+}
+
+/**
+ * Sonepar-spezifische Geschäftslogik
+ */
+function applySoneparLogic(proposal: BookingProposal, context: AccountingContext): void {
+  const searchText = context.extractedText.toLowerCase();
+  
+  if (searchText.includes('elektroinstallation') || searchText.includes('verkabelung')) {
+    proposal.debitAccount = '3000'; // Wareneinkauf
+    proposal.bookingText = `Elektroinstallationsmaterial - Sonepar`;
+    proposal.confidence = Math.min(proposal.confidence + 15, 100);
+  }
+  
+  if (searchText.includes('werkzeug')) {
+    proposal.debitAccount = '4985'; // Werkzeuge und Kleingeräte
+    proposal.bookingText = `Elektrowerkzeuge - Sonepar`;
+  }
+}
+
+/**
+ * Allgemeine Geschäftsregeln
+ */
+function applyGeneralBusinessRules(proposal: BookingProposal, context: AccountingContext): void {
+  // Kleinbetragsregelung
+  if (context.invoiceAmount <= 150) {
+    // Bei Kleinbeträgen: Sofort-Aufwand statt Aktivierung
+    if (proposal.debitAccount.startsWith('04') || proposal.debitAccount.startsWith('05')) {
+      proposal.debitAccount = '4855'; // Sofortabschreibung GWG
+      proposal.explanation += ` | Kleinbetrag: Sofort-Aufwand`;
+    }
+  }
+  
+  // Hochbetrag-Warnung
+  if (context.invoiceAmount > 5000) {
+    proposal.explanation += ` | Hochbetrag: Prüfung erforderlich`;
+    proposal.confidence = Math.max(proposal.confidence - 10, 50);
+  }
+  
+  // MwSt.-Plausibilität
+  if (context.vatRate === 0 && context.invoiceAmount > 1000) {
+    proposal.explanation += ` | Keine MwSt.: Prüfung erforderlich`;
+    proposal.confidence = Math.max(proposal.confidence - 5, 60);
   }
 }
 

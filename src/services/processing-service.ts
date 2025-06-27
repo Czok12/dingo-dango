@@ -141,12 +141,16 @@ export async function processInvoice(filePath: string, invoiceId: string): Promi
       confidence: calculateConfidence(extractedData, templateData)
     };
     
-    // Kreditor-Management
+    // Erweiterte Kreditor-Suche mit mehreren Kriterien
     let creditor: CreditorType | null = null;
-    if (finalData.supplierTaxId) {
-      creditor = await findCreditorByUStId(finalData.supplierTaxId);
+    if (finalData.supplierTaxId || finalData.iban || finalData.supplierName) {
+      creditor = await findCreditorByMultipleCriteria(
+        finalData.supplierName,
+        finalData.supplierTaxId,
+        finalData.iban
+      );
       
-      // Erstelle neuen Kreditor falls nicht gefunden
+      // Erstelle neuen Kreditor falls nicht gefunden und genügend Daten vorhanden
       if (!creditor && finalData.supplierName) {
         creditor = await createCreditorFromInvoiceData(finalData);
       }
@@ -620,7 +624,7 @@ async function createBookingEntry(
  */
 
 /**
- * Sucht einen Kreditor anhand der USt-IdNr
+ * Sucht einen Kreditor anhand der USt-IdNr mit erweiterten Suchkriterien
  */
 export async function findCreditorByUStId(ustId: string): Promise<CreditorType | null> {
   try {
@@ -629,8 +633,9 @@ export async function findCreditorByUStId(ustId: string): Promise<CreditorType |
     }
     
     // Bereinige die USt-IdNr (entferne Leerzeichen und Sonderzeichen)
-    const cleanUstId = ustId.replace(/\s+/g, '').toUpperCase();
+    const cleanUstId = ustId.replace(/[\s\-\.]/g, '').toUpperCase();
     
+    // Primäre Suche: Exakte USt-IdNr
     const creditor = await prisma.creditor.findFirst({
       where: {
         ustId: {
@@ -642,15 +647,166 @@ export async function findCreditorByUStId(ustId: string): Promise<CreditorType |
     });
     
     if (creditor) {
-      console.log(`Kreditor gefunden: ${creditor.name} (USt-IdNr: ${creditor.ustId})`);
-    } else {
-      console.log(`Kein Kreditor für USt-IdNr ${cleanUstId} gefunden`);
+      console.log(`✅ Kreditor gefunden (USt-IdNr): ${creditor.name} (${creditor.ustId})`);
+      return creditor;
     }
     
-    return creditor;
+    // Fallback-Suche: Ähnliche USt-IdNr (für Tippfehler oder Formatierungsunterschiede)
+    const similarCreditors = await prisma.creditor.findMany({
+      where: {
+        ustId: {
+          contains: cleanUstId.substring(0, 8), // Ersten 8 Zeichen für ähnliche Suche
+          mode: 'insensitive'
+        },
+        isActive: true
+      }
+    });
+    
+    if (similarCreditors.length > 0) {
+      // Wähle den besten Match basierend auf Ähnlichkeit
+      const bestMatch = similarCreditors.find((c: CreditorType) => 
+        c.ustId && c.ustId.replace(/[\s\-\.]/g, '').toUpperCase().includes(cleanUstId.substring(0, 10))
+      );
+      
+      if (bestMatch) {
+        console.log(`⚠️ Ähnlicher Kreditor gefunden: ${bestMatch.name} (${bestMatch.ustId})`);
+        return bestMatch;
+      }
+    }
+    
+    console.log(`❌ Kein Kreditor für USt-IdNr ${cleanUstId} gefunden`);
+    return null;
     
   } catch (error) {
     console.error('Fehler beim Suchen des Kreditors:', error);
+    return null;
+  }
+}
+
+/**
+ * Erweiterte Kreditor-Suche mit mehreren Kriterien
+ */
+export async function findCreditorByMultipleCriteria(
+  supplierName?: string,
+  ustId?: string,
+  iban?: string
+): Promise<CreditorType | null> {
+  try {
+    // 1. Priorität: USt-IdNr
+    if (ustId) {
+      const creditorByUstId = await findCreditorByUStId(ustId);
+      if (creditorByUstId) {
+        return creditorByUstId;
+      }
+    }
+    
+    // 2. Priorität: IBAN
+    if (iban) {
+      const cleanIban = iban.replace(/\s/g, '').toUpperCase();
+      const creditorByIban = await prisma.creditor.findFirst({
+        where: {
+          iban: {
+            equals: cleanIban,
+            mode: 'insensitive'
+          },
+          isActive: true
+        }
+      });
+      
+      if (creditorByIban) {
+        console.log(`✅ Kreditor gefunden (IBAN): ${creditorByIban.name}`);
+        return creditorByIban;
+      }
+    }
+    
+    // 3. Priorität: Name (Fuzzy-Suche)
+    if (supplierName) {
+      const creditorByName = await findCreditorByName(supplierName);
+      if (creditorByName) {
+        return creditorByName;
+      }
+    }
+    
+    console.log('❌ Kreditor mit den gegebenen Kriterien nicht gefunden');
+    return null;
+    
+  } catch (error) {
+    console.error('Fehler bei der erweiterten Kreditor-Suche:', error);
+    return null;
+  }
+}
+
+/**
+ * Sucht Kreditor anhand des Namens mit Fuzzy-Matching
+ */
+export async function findCreditorByName(supplierName: string): Promise<CreditorType | null> {
+  try {
+    if (!supplierName || supplierName.trim() === '') {
+      return null;
+    }
+    
+    const cleanName = supplierName.trim();
+    
+    // Exakte Suche
+    const creditor = await prisma.creditor.findFirst({
+      where: {
+        name: {
+          equals: cleanName,
+          mode: 'insensitive'
+        },
+        isActive: true
+      }
+    });
+    
+    if (creditor) {
+      console.log(`✅ Kreditor gefunden (exakter Name): ${creditor.name}`);
+      return creditor;
+    }
+    
+    // Fuzzy-Suche: Enthält-Suche
+    const partialMatches = await prisma.creditor.findMany({
+      where: {
+        name: {
+          contains: cleanName,
+          mode: 'insensitive'
+        },
+        isActive: true
+      }
+    });
+    
+    if (partialMatches.length > 0) {
+      // Bevorzuge den kürzesten Namen (wahrscheinlich bester Match)
+      partialMatches.sort((a: CreditorType, b: CreditorType) => a.name.length - b.name.length);
+      console.log(`⚠️ Ähnlicher Kreditor gefunden: ${partialMatches[0].name}`);
+      return partialMatches[0];
+    }
+    
+    // Erweiterte Fuzzy-Suche: Einzelne Wörter
+    const words = cleanName.split(/\s+/).filter(word => word.length > 2);
+    if (words.length > 0) {
+      for (const word of words) {
+        const wordMatches = await prisma.creditor.findMany({
+          where: {
+            name: {
+              contains: word,
+              mode: 'insensitive'
+            },
+            isActive: true
+          }
+        });
+        
+        if (wordMatches.length > 0) {
+          console.log(`⚠️ Kreditor gefunden (Wort-Match "${word}"): ${wordMatches[0].name}`);
+          return wordMatches[0];
+        }
+      }
+    }
+    
+    console.log(`❌ Kein Kreditor für Name "${cleanName}" gefunden`);
+    return null;
+    
+  } catch (error) {
+    console.error('Fehler bei der Name-basierten Kreditor-Suche:', error);
     return null;
   }
 }

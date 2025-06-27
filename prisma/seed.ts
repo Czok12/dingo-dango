@@ -6,12 +6,21 @@ import { parse } from 'csv-parse/sync';
 
 const prisma = new PrismaClient();
 
-// Interface für Kontenplan CSV
+// Interface für Kontenplan CSV-Entry
 interface KontenplanEntry {
+  Konto: string;
+  Bezeichnung: string;
+}
+
+// Interface für erweiterte SKR03-Account-Daten
+interface ExtendedSKR03Account {
   code: string;
   name: string;
   type: string;
   category: string;
+  keywords?: string;
+  isCreditor?: boolean;
+  isDebitor?: boolean;
 }
 
 // Interface für Kreditor CSV (falls vorhanden)
@@ -25,73 +34,204 @@ interface CreditorEntry {
   country?: string;
   defaultAccount?: string;
   paymentTerms?: number;
+  accountCode?: string;
+  isFromKontenplan?: boolean;
 }
 
-async function loadKontenplanFromCSV(): Promise<KontenplanEntry[]> {
+/**
+ * Lädt und verarbeitet Kontenplan.csv
+ */
+async function loadKontenplanFromCSV(): Promise<{ accounts: ExtendedSKR03Account[], creditors: CreditorEntry[] }> {
   try {
-    const csvPath = path.join(process.cwd(), 'data', 'kontenplan.csv');
+    const csvPath = path.join(process.cwd(), 'Kontenplan.csv');
     
-    // Fallback: Verwende die bestehenden SKR03-Daten falls CSV nicht vorhanden
     if (!fs.existsSync(csvPath)) {
       console.log('⚠️  Kontenplan.csv nicht gefunden, verwende SKR03-Standarddaten');
-      return SKR03_ACCOUNTS.map(account => ({
-        code: account.code,
-        name: account.name,
-        type: account.type,
-        category: account.category
-      }));
+      return {
+        accounts: SKR03_ACCOUNTS.map(account => ({
+          code: account.code,
+          name: account.name,
+          type: account.type,
+          category: account.category,
+          keywords: account.keywords.join(',')
+        })),
+        creditors: []
+      };
     }
     
     const csvContent = fs.readFileSync(csvPath, 'utf-8');
     const records = parse(csvContent, {
       columns: true,
       skip_empty_lines: true,
-      delimiter: ';' // Annahme: deutsche CSV mit Semikolon
-    }) as Record<string, string>[];
+      delimiter: ';'
+    }) as KontenplanEntry[];
     
-    return records.map((record: Record<string, string>) => ({
-      code: record.Kontonummer || record.code,
-      name: record.Kontobezeichnung || record.name,
-      type: record.Kontotyp || record.type || 'Aufwand',
-      category: record.Kategorie || record.category || 'Allgemein'
-    }));
+    const accounts: ExtendedSKR03Account[] = [];
+    const creditors: CreditorEntry[] = [];
+    
+    for (const record of records) {
+      const accountCode = record.Konto;
+      const accountName = record.Bezeichnung;
+      
+      if (!accountCode || !accountName) {
+        continue;
+      }
+      
+      // Bestimme Kontotyp und Kategorie basierend auf Kontonummer
+      const { type, category, isCreditor, isDebitor } = determineAccountTypeFromCode(accountCode);
+      
+      // Wenn es ein Kreditorenkonto ist (10001-10999 oder 70001-70999)
+      if (isCreditor && (accountCode.startsWith('10') || accountCode.startsWith('70'))) {
+        creditors.push({
+          name: accountName,
+          accountCode: accountCode,
+          isFromKontenplan: true,
+          defaultAccount: determineDefaultExpenseAccount(accountName),
+          country: 'Deutschland'
+        });
+      }
+      
+      // Füge Konto hinzu
+      accounts.push({
+        code: accountCode,
+        name: accountName,
+        type,
+        category,
+        keywords: generateKeywordsFromName(accountName),
+        isCreditor,
+        isDebitor
+      });
+    }
+    
+    console.log(`✅ Kontenplan geladen: ${accounts.length} Konten, ${creditors.length} Kreditoren`);
+    return { accounts, creditors };
     
   } catch (error) {
     console.error('Fehler beim Laden der Kontenplan CSV:', error);
-    return [];
+    return { accounts: [], creditors: [] };
   }
 }
 
-async function loadCreditorsFromCSV(): Promise<CreditorEntry[]> {
+/**
+ * Bestimmt Kontotyp basierend auf SKR03-Kontonummer
+ */
+function determineAccountTypeFromCode(code: string): {
+  type: string;
+  category: string;
+  isCreditor: boolean;
+  isDebitor: boolean;
+} {
+  const numCode = parseInt(code, 10);
+  
+  // Aktiva (0-1999)
+  if (numCode >= 0 && numCode <= 1999) {
+    if (numCode >= 1000 && numCode <= 1999) {
+      // Umlaufvermögen
+      if (numCode >= 1400 && numCode <= 1499) {
+        return { type: 'Aktiva', category: 'Forderungen', isCreditor: false, isDebitor: true };
+      }
+      if (numCode >= 10000 && numCode <= 19999) {
+        return { type: 'Aktiva', category: 'Debitoren', isCreditor: false, isDebitor: true };
+      }
+      return { type: 'Aktiva', category: 'Umlaufvermögen', isCreditor: false, isDebitor: false };
+    }
+    return { type: 'Aktiva', category: 'Anlagevermögen', isCreditor: false, isDebitor: false };
+  }
+  
+  // Passiva (2000-3999)
+  if (numCode >= 2000 && numCode <= 3999) {
+    if (numCode >= 1600 && numCode <= 1899) {
+      return { type: 'Passiva', category: 'Verbindlichkeiten', isCreditor: true, isDebitor: false };
+    }
+    if (numCode >= 70000 && numCode <= 79999) {
+      return { type: 'Passiva', category: 'Kreditoren', isCreditor: true, isDebitor: false };
+    }
+    return { type: 'Passiva', category: 'Eigenkapital', isCreditor: false, isDebitor: false };
+  }
+  
+  // Aufwand (4000-7999)
+  if (numCode >= 4000 && numCode <= 7999) {
+    return { type: 'Aufwand', category: determineExpenseCategory(code), isCreditor: false, isDebitor: false };
+  }
+  
+  // Ertrag (8000-9999)
+  if (numCode >= 8000 && numCode <= 9999) {
+    return { type: 'Ertrag', category: 'Umsatzerlöse', isCreditor: false, isDebitor: false };
+  }
+  
+  return { type: 'Sonstiges', category: 'Allgemein', isCreditor: false, isDebitor: false };
+}
+
+/**
+ * Bestimmt Aufwandskategorie basierend auf Kontonummer
+ */
+function determineExpenseCategory(code: string): string {
+  const numCode = parseInt(code, 10);
+  
+  if (numCode >= 4200 && numCode <= 4299) return 'Raumkosten';
+  if (numCode >= 4300 && numCode <= 4399) return 'Steuern';
+  if (numCode >= 4400 && numCode <= 4499) return 'Versicherungen';
+  if (numCode >= 4500 && numCode <= 4599) return 'Fahrzeuge';
+  if (numCode >= 4600 && numCode <= 4699) return 'Marketing';
+  if (numCode >= 4800 && numCode <= 4899) return 'Instandhaltung';
+  if (numCode >= 4900 && numCode <= 4999) return 'Büro';
+  if (numCode >= 3000 && numCode <= 3999) return 'Wareneinkauf';
+  if (numCode >= 4100 && numCode <= 4199) return 'Personal';
+  
+  return 'Sonstige Aufwendungen';
+}
+
+/**
+ * Generiert Keywords aus Kontobezeichnung
+ */
+function generateKeywordsFromName(name: string): string {
+  const keywords: string[] = [];
+  const cleanName = name.toLowerCase();
+  
+  // Basis-Keywords aus dem Namen extrahieren
+  const words = cleanName.split(/[\s\-,\/]+/);
+  keywords.push(...words.filter(word => word.length > 2));
+  
+  // Spezielle Keywords basierend auf Begriffen
+  if (cleanName.includes('miete')) keywords.push('miete', 'raumkosten');
+  if (cleanName.includes('büro')) keywords.push('büro', 'büromaterial', 'office');
+  if (cleanName.includes('telefon')) keywords.push('telefon', 'handy', 'kommunikation');
+  if (cleanName.includes('versicherung')) keywords.push('versicherung', 'haftpflicht');
+  if (cleanName.includes('kfz') || cleanName.includes('fahrzeug')) keywords.push('auto', 'fahrzeug', 'kfz');
+  if (cleanName.includes('porto')) keywords.push('porto', 'versand', 'post');
+  if (cleanName.includes('wartung') || cleanName.includes('reparatur')) keywords.push('wartung', 'reparatur', 'instandhaltung');
+  
+  return [...new Set(keywords)].join(',');
+}
+
+/**
+ * Bestimmt Standard-Aufwandskonto für Kreditor
+ */
+function determineDefaultExpenseAccount(creditorName: string): string {
+  const name = creditorName.toLowerCase();
+  
+  if (name.includes('finanzamt')) return '4320'; // Gewerbesteuer
+  if (name.includes('handwerkskammer')) return '4380'; // Beiträge
+  if (name.includes('amazon') || name.includes('galaxus')) return '4930'; // Bürobedarf
+  if (name.includes('telekom') || name.includes('klarmobil')) return '4920'; // Telefon
+  if (name.includes('strato')) return '4925'; // Internetkosten
+  if (name.includes('db ') || name.includes('deutsche bahn')) return '4670'; // Reisekosten
+  if (name.includes('haufe') || name.includes('bundesanzeiger')) return '4957'; // Abschluss- und Prüfungskosten
+  
+  // Standard: Sonstiger Betriebsbedarf
+  return '4980';
+}
+
+/**
+ * Lädt erweiterte Kreditor-Daten aus CSV (falls vorhanden)
+ */
+async function loadAdditionalCreditorsFromCSV(): Promise<CreditorEntry[]> {
   try {
     const csvPath = path.join(process.cwd(), 'data', 'kreditoren.csv');
     
     if (!fs.existsSync(csvPath)) {
-      console.log('⚠️  Kreditoren.csv nicht gefunden, erstelle Demo-Kreditoren');
-      return [
-        {
-          name: 'FAMO GmbH',
-          ustId: 'DE123456789',
-          iban: 'DE89370400440532013000',
-          address: 'Industriestraße 15',
-          city: 'München',
-          zipCode: '80331',
-          country: 'Deutschland',
-          defaultAccount: '4400',
-          paymentTerms: 30
-        },
-        {
-          name: 'Sonepar Deutschland GmbH',
-          ustId: 'DE987654321',
-          iban: 'DE12500105170137075030',
-          address: 'Am Wallgraben 100',
-          city: 'Stuttgart',
-          zipCode: '70565',
-          country: 'Deutschland',
-          defaultAccount: '4300',
-          paymentTerms: 14
-        }
-      ];
+      console.log('⚠️  Zusätzliche Kreditoren.csv nicht gefunden');
+      return [];
     }
     
     const csvContent = fs.readFileSync(csvPath, 'utf-8');
@@ -110,11 +250,12 @@ async function loadCreditorsFromCSV(): Promise<CreditorEntry[]> {
       zipCode: record.PLZ || record.zipCode,
       country: record.Land || record.country || 'Deutschland',
       defaultAccount: record.Sachkonto || record.defaultAccount,
-      paymentTerms: record.Zahlungsziel ? parseInt(record.Zahlungsziel) : undefined
+      paymentTerms: record.Zahlungsziel ? parseInt(record.Zahlungsziel) : undefined,
+      isFromKontenplan: false
     }));
     
   } catch (error) {
-    console.error('Fehler beim Laden der Kreditoren CSV:', error);
+    console.error('Fehler beim Laden der zusätzlichen Kreditoren CSV:', error);
     return [];
   }
 }
@@ -128,19 +269,21 @@ async function main() {
     update: {},
     create: {
       id: 'default-company-id',
-      name: 'Mustermann Elektrotechnik UG',
+      name: 'Elektro Czok UG',
       taxNumber: 'DE123456789',
       address: 'Musterstraße 123',
-      city: 'Berlin',
-      zipCode: '10115'
+      city: 'Osterholz-Scharmbeck',
+      zipCode: '27711'
     }
   });
 
   console.log('✅ Created company:', company.name);
 
-  // Lade und füge Kontenplan hinzu
-  const kontenplan = await loadKontenplanFromCSV();
-  for (const account of kontenplan) {
+  // Lade Kontenplan und Kreditoren aus CSV
+  const { accounts, creditors: csvCreditors } = await loadKontenplanFromCSV();
+  
+  // Füge SKR03-Konten hinzu
+  for (const account of accounts) {
     await prisma.sKR03Account.upsert({
       where: { accountCode: account.code },
       update: {},
@@ -149,18 +292,46 @@ async function main() {
         accountName: account.name,
         accountType: account.type,
         category: account.category,
+        keywords: account.keywords,
+        isCreditor: account.isCreditor || false,
+        isDebitor: account.isDebitor || false,
         isActive: true
       }
     });
   }
 
-  console.log(`✅ Added ${kontenplan.length} SKR03 accounts`);
+  console.log(`✅ Added ${accounts.length} SKR03 accounts`);
 
-  // Lade und füge Kreditoren hinzu
-  const creditors = await loadCreditorsFromCSV();
-  for (const creditorData of creditors) {
+  // Füge Kreditoren aus Kontenplan hinzu
+  for (const creditorData of csvCreditors) {
     await prisma.creditor.upsert({
-      where: { ustId: creditorData.ustId || `temp-${creditorData.name}` },
+      where: { 
+        // Fallback für eindeutige Identifikation
+        ustId: creditorData.ustId || `temp-${creditorData.name}-${creditorData.accountCode}`
+      },
+      update: {},
+      create: {
+        name: creditorData.name,
+        ustId: creditorData.ustId,
+        iban: creditorData.iban,
+        address: creditorData.address,
+        city: creditorData.city,
+        zipCode: creditorData.zipCode,
+        country: creditorData.country,
+        defaultAccount: creditorData.defaultAccount,
+        creditorAccount: creditorData.accountCode,
+        paymentTerms: creditorData.paymentTerms,
+        isFromKontenplan: creditorData.isFromKontenplan || false,
+        isActive: true
+      }
+    });
+  }
+
+  // Lade zusätzliche Kreditoren
+  const additionalCreditors = await loadAdditionalCreditorsFromCSV();
+  for (const creditorData of additionalCreditors) {
+    await prisma.creditor.upsert({
+      where: { ustId: creditorData.ustId || `temp-additional-${creditorData.name}` },
       update: {},
       create: {
         name: creditorData.name,
@@ -172,12 +343,14 @@ async function main() {
         country: creditorData.country,
         defaultAccount: creditorData.defaultAccount,
         paymentTerms: creditorData.paymentTerms,
+        isFromKontenplan: false,
         isActive: true
       }
     });
   }
 
-  console.log(`✅ Added ${creditors.length} creditors`);
+  const totalCreditors = csvCreditors.length + additionalCreditors.length;
+  console.log(`✅ Added ${totalCreditors} creditors (${csvCreditors.length} from Kontenplan, ${additionalCreditors.length} additional)`);
 
   // Erstelle Demo-Rechnung
   await prisma.invoice.upsert({
@@ -200,7 +373,7 @@ async function main() {
       vatRate: 19,
       processed: true,
       booked: false,
-      skr03Account: '6815',
+      skr03Account: '4930',
       bookingText: 'Büromaterial und Software',
       companyId: company.id
     }
