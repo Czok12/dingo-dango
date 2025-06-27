@@ -1,0 +1,106 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Unternehmen/Mandant
+model Company {
+  id           String @id @default(cuid())
+  name         String
+  taxNumber    String?
+  address      String?
+  city         String?
+  zipCode      String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  
+  invoices     Invoice[]
+  bookings     Booking[]
+  
+  @@map("companies")
+}
+
+// Eingangsrechnungen
+model Invoice {
+  id              String @id @default(cuid())
+  filename        String
+  originalName    String
+  filePath        String
+  fileSize        Int
+  mimeType        String
+  
+  // Extrahierte Daten
+  supplierName    String?
+  supplierTaxId   String?
+  invoiceNumber   String?
+  invoiceDate     DateTime?
+  dueDate         DateTime?
+  totalAmount     Float?
+  netAmount       Float?
+  vatAmount       Float?
+  vatRate         Float?
+  
+  // OCR und Verarbeitung
+  ocrText         String?
+  processed       Boolean @default(false)
+  processingError String?
+  
+  // Kontierung
+  booked          Boolean @default(false)
+  skr03Account    String?
+  bookingText     String?
+  
+  companyId       String
+  company         Company @relation(fields: [companyId], references: [id])
+  
+  bookings        Booking[]
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@map("invoices")
+}
+
+// Buchungen
+model Booking {
+  id              String @id @default(cuid())
+  bookingDate     DateTime
+  bookingText     String
+  debitAccount    String  // SKR03 Sollkonto
+  creditAccount   String  // SKR03 Habenkonto
+  amount          Float
+  vatRate         Float?
+  
+  invoiceId       String?
+  invoice         Invoice? @relation(fields: [invoiceId], references: [id])
+  
+  companyId       String
+  company         Company @relation(fields: [companyId], references: [id])
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@map("bookings")
+}
+
+// SKR03 Kontenrahmen
+model SKR03Account {
+  id          String @id @default(cuid())
+  accountCode String @unique
+  accountName String
+  accountType String // Aktiva, Passiva, Aufwand, Ertrag
+  category    String // Detailkategorie
+  isActive    Boolean @default(true)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@map("skr03_accounts")
+}
