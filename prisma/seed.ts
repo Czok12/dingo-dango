@@ -70,8 +70,9 @@ async function loadKontenplanFromCSV(): Promise<{ accounts: ExtendedSKR03Account
     const creditors: CreditorEntry[] = [];
     
     for (const record of records) {
-      const accountCode = record.Konto;
-      const accountName = record.Bezeichnung;
+      // Umgang mit möglicherweise falsch geparsten Schlüsseln
+      const accountCode = record.Konto || record['Konto'] || Object.values(record)[0];
+      const accountName = record.Bezeichnung || record['Bezeichnung'] || Object.values(record)[1];
       
       if (!accountCode || !accountName) {
         continue;
@@ -80,8 +81,8 @@ async function loadKontenplanFromCSV(): Promise<{ accounts: ExtendedSKR03Account
       // Bestimme Kontotyp und Kategorie basierend auf Kontonummer
       const { type, category, isCreditor, isDebitor } = determineAccountTypeFromCode(accountCode);
       
-      // Wenn es ein Kreditorenkonto ist (10001-10999 oder 70001-70999)
-      if (isCreditor && (accountCode.startsWith('10') || accountCode.startsWith('70'))) {
+      // Wenn es ein Kreditorenkonto ist (70xxx)
+      if (isCreditor && accountCode.startsWith('70')) {
         creditors.push({
           name: accountName,
           accountCode: accountCode,
@@ -123,6 +124,16 @@ function determineAccountTypeFromCode(code: string): {
 } {
   const numCode = parseInt(code, 10);
   
+  // Spezielle Behandlung für 5-stellige Kreditor/Debitor-Konten
+  if (code.length === 5) {
+    if (numCode >= 10000 && numCode <= 19999) {
+      return { type: 'Aktiva', category: 'Debitoren', isCreditor: false, isDebitor: true };
+    }
+    if (numCode >= 70000 && numCode <= 79999) {
+      return { type: 'Passiva', category: 'Kreditoren', isCreditor: true, isDebitor: false };
+    }
+  }
+  
   // Aktiva (0-1999)
   if (numCode >= 0 && numCode <= 1999) {
     if (numCode >= 1000 && numCode <= 1999) {
@@ -130,21 +141,15 @@ function determineAccountTypeFromCode(code: string): {
       if (numCode >= 1400 && numCode <= 1499) {
         return { type: 'Aktiva', category: 'Forderungen', isCreditor: false, isDebitor: true };
       }
-      if (numCode >= 10000 && numCode <= 19999) {
-        return { type: 'Aktiva', category: 'Debitoren', isCreditor: false, isDebitor: true };
-      }
       return { type: 'Aktiva', category: 'Umlaufvermögen', isCreditor: false, isDebitor: false };
     }
     return { type: 'Aktiva', category: 'Anlagevermögen', isCreditor: false, isDebitor: false };
   }
   
-  // Passiva (2000-3999)
-  if (numCode >= 2000 && numCode <= 3999) {
+  // Passiva (2000-3999) - aber auch 1600-1899 für Verbindlichkeiten
+  if ((numCode >= 1600 && numCode <= 1899) || (numCode >= 2000 && numCode <= 3999)) {
     if (numCode >= 1600 && numCode <= 1899) {
       return { type: 'Passiva', category: 'Verbindlichkeiten', isCreditor: true, isDebitor: false };
-    }
-    if (numCode >= 70000 && numCode <= 79999) {
-      return { type: 'Passiva', category: 'Kreditoren', isCreditor: true, isDebitor: false };
     }
     return { type: 'Passiva', category: 'Eigenkapital', isCreditor: false, isDebitor: false };
   }
