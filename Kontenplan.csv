@@ -1,0 +1,134 @@
+﻿Konto;Bezeichnung
+1000;Kasse
+1201;Sparkasse
+1202;Geschäftskonto Elektro Czok UG
+1203;Commerzbank GeschäftsGirokonto
+1360;Geldtransit
+1400;Forderungen aus Lieferungen und Leistungen
+10001;Heise und Klatte GmbH
+10002;Cölln, Ira von
+10005;HomeStyle-Bremen GmbH & Co. KG
+10006;Finanzamt Osterholz-Scharmbeck
+10007;Sammelkunde
+10008;Brinkumer Massivhaus GmbH
+10009;Czok, Stefan
+10010;Czok, Jonas Christian
+1571;Abziehbare Vorsteuer 7 %
+1574;Abziehbare Vorsteuer aus innergemeinschaftlichem Erwerb 19 %
+1576;Abziehbare Vorsteuer 19 %
+1577;Abziehbare Vorsteuer nach § 13b UStG 19 %
+1590;Durchlaufende Posten
+1600;Verbindlichkeiten aus Lieferungen und Leistungen
+1665;Verbindlichkeiten gegenüber GmbH-Gesellschaftern
+1718;Erhaltene, versteuerte Anzahlungen 19 % USt (Verbindlichkeiten)
+1740;Verbindlichkeiten aus Lohn und Gehalt
+1741;Verbindlichkeiten aus Lohn- und Kirchensteuer
+1755;Lohn- und Gehaltsverrechnungskonto
+1766;Umsatzsteuer nicht fällig 19 %
+1774;Umsatzsteuer aus innergemeinschaftlichem Erwerb 19 %
+1776;Umsatzsteuer 19 %
+1780;Umsatzsteuer-Vorauszahlungen
+1787;Umsatzsteuer nach § 13b UStG 19 %
+1800;Privatentnahmen allgemein (VH 1)
+1890;Privateinlagen (VH 1)
+420;Büroeinrichtung
+480;Geringwertige Wirtschaftsgüter
+490;Sonstige Betriebs- und Geschäftsausstattung
+2150;Aufwendungen aus der Währungsumrechnung
+2200;Körperschaftsteuer
+2208;Solidaritätszuschlag
+2309;Sonstige Aufwendungen unregelmäßig
+2310;Anlagenabgänge Sachanlagen (Restbuchwert bei Buchverlust)
+3000;Einkauf Roh-, Hilfs- und Betriebsstoffe
+3100;Fremdleistungen
+3123;Sonstige Leistungen eines im anderen EU-Land ansässigen Unternehmers 19 % VSt
+3200;Wareneingang
+3425;Innergemeinschaftlicher Erwerb 19 % VSt
+3700;Nachlässe
+3800;Bezugsnebenkosten
+4124;Geschäftsführergehälter der GmbH-Gesellschafter
+4130;Gesetzliche soziale Aufwendungen
+4140;Freiwillige soziale Aufwendungen, lohnsteuerfrei
+4165;Aufwendungen für Altersversorgung Gesellschafter-Geschäftsführer
+4210;Miete (unbewegliche Wirtschaftsgüter)
+4211;Mietleasing (bewegliche Wirtschaftsgüter)
+4240;Gas, Strom, Wasser
+4250;Reinigung
+4260;Abfallbeseitigung
+4320;Gewerbesteuer
+4360;Versicherungen (betrieblich)
+4380;Beiträge
+4390;Sonstige Abgaben
+4530;Laufende Fahrzeug-Betriebskosten
+4540;Kfz-Steuer
+4550;Kfz-Versicherungen
+4580;Sonstige Kfz-Kosten
+4600;Werbekosten
+4605;Streuartikel
+4630;Geschenke abzugsfähig ohne § 37b EStG
+4660;Reisekosten Unternehmer Verpflegungsmehraufwand
+4664;Reisekosten Unternehmer Übernachtungsaufwand
+4670;Reisekosten Unternehmer Nebenkosten
+4673;Reisekosten Unternehmer Fahrtkosten
+4680;Fortbildungskosten / Fachliteratur
+4800;Reparatur und Instandhaltung von BGA (Betriebs-/Geschäftsausstattung)
+4805;Reparatur und Instandhaltung von betrieblichen Gebäuden
+4806;Wartungskosten für Hard- und Software
+4830;Abschreibungen auf Sachanlagen (ohne AfA auf Kfz und Gebäude)
+4855;Sofortabschreibung geringwertige Wirtschaftsgüter
+4910;Porto
+4920;Telefon
+4925;Internetkosten
+4930;Bürobedarf
+4950;Rechts- und Beratungskosten
+4957;Abschluss- und Prüfungskosten
+4960;Miete für bewegliche Wirtschaftsgüter (nicht Leasing)
+4964;Aufwendungen für Lizenzen, Konzessionen und Software
+4970;Nebenkosten des Geldverkehrs
+4980;Sonstiger Betriebsbedarf
+4985;Werkzeuge und Kleingeräte
+630;Verbindlichkeiten gegenüber Kreditinstituten
+730;Verbindlichkeiten gegenüber Gesellschaftern
+70001;Sammellieferant
+70002;Römer, Ulrike
+70003;Finanzamt Osterholz-Scharmbeck
+70004;Handwerkskammer Braunschweig-Lüneburg-Stade
+70005;Strato
+70006;Elten GmbH
+70007;Böttcher AG
+70008;Stadt Osterholz-Scharmbeck
+70009;Ryabko, Lüven
+70010;Bünemann, Lasse
+70011;Notebooksbilliger.de AG
+70013;DSIT GmbH
+70015;Galaxus Deutschland Gmbh
+70016;Mogielnicki, Sławomir
+70017;Profipatch Gmbh
+70018;Amazon Services Europe, Sarl
+70019;Halmburger Gmbh
+70020;Ergotopia Gmbh
+70021;Hemaplast GmbH & Co. Kg
+70022;Klarmobil Gmbh
+70023;FAMO GmbH & Co. KG
+70024;Zander, Niklas
+70025;Sara
+70026;Sonepar Deutschland Region Nord-Ost GmbH
+70027;Vistaprint B.V
+70029;Marr, Veit Rochus
+70030;Haufe Service Center GmbH
+70031;DB Fernverkehr AG
+70032;Lenovo
+70033;ebilanzplus GmbH
+70034;STR ELEKTRONIK Josef Schlechtinger GmbH
+70035;Bundesanzeiger Verlag
+70036;Drillisch Online Gmbh
+70037;Amazon EU S.a r.l., Succursale Francaise
+70038;memoryking GmbH & Co. KG
+70039;Amazon Deutschland
+70040;Czok, Jonas Christian
+800;Gezeichnetes Kapital
+8337;Erlöse aus Leistungen, § 13b UStG
+8400;Erlöse 19 % USt
+8600;Sonstige Erlöse betrieblich und regelmäßig
+8741;Gewährte Skonti aus Leistungen, für die der Leistungsempfänger die Umsatzsteuer nach § 13b UStG schuldet
+9000;Saldenvorträge, Sachkonten

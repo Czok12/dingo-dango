@@ -223,3 +223,238 @@ export function getSKR03AccountByCode(code: string): SKR03Account | null {
 export function getSKR03AccountsByType(type: SKR03Account['type']): SKR03Account[] {
   return SKR03_ACCOUNTS.filter(account => account.type === type);
 }
+
+// Interface für Buchungssatz-Vorschlag
+export interface BookingProposal {
+  debitAccount: string;
+  creditAccount: string;
+  amount: number;
+  bookingText: string;
+  vatAmount?: number;
+  vatRate?: number;
+  creditorId?: string;
+  confidence: number;
+  explanation: string;
+}
+
+// Interface für erweiterte Kontierungslogik
+export interface AccountingContext {
+  supplierName?: string;
+  supplierTaxId?: string;
+  creditorId?: string;
+  defaultCreditorAccount?: string;
+  invoiceAmount: number;
+  vatAmount?: number;
+  vatRate?: number;
+  extractedText: string;
+  template?: 'FAMO' | 'SONEPAR' | 'GENERIC';
+}
+
+/**
+ * Accounting Logic Engine (ALE) - Generiert vollständige Buchungssatz-Vorschläge
+ */
+export function generateBookingProposal(context: AccountingContext): BookingProposal | null {
+  try {
+    // 1. Sachkonto ermitteln
+    const suggestedAccount = suggestSKR03Account(context.extractedText, context.supplierName);
+    
+    if (!suggestedAccount) {
+      console.log('Kein passendes Sachkonto gefunden');
+      return null;
+    }
+
+    // 2. Kreditorenkonto ermitteln
+    const creditorAccount = determineCreditorAccount(context);
+    
+    // 3. Buchungssatz zusammenstellen
+    const proposal: BookingProposal = {
+      debitAccount: suggestedAccount.code, // Soll: Sachkonto (Aufwand)
+      creditAccount: creditorAccount, // Haben: Kreditorenkonto
+      amount: context.invoiceAmount,
+      vatAmount: context.vatAmount,
+      vatRate: context.vatRate,
+      creditorId: context.creditorId,
+      bookingText: generateBookingText(context, suggestedAccount),
+      confidence: calculateBookingConfidence(context, suggestedAccount),
+      explanation: generateBookingExplanation(context, suggestedAccount, creditorAccount)
+    };
+
+    // 4. Template-spezifische Anpassungen
+    applyTemplateSpecificLogic(proposal, context);
+
+    console.log(`Buchungssatz-Vorschlag generiert: ${proposal.debitAccount} an ${proposal.creditAccount}`);
+    return proposal;
+
+  } catch (error) {
+    console.error('Fehler bei der Buchungssatz-Generierung:', error);
+    return null;
+  }
+}
+
+/**
+ * Ermittelt das passende Kreditorenkonto
+ */
+function determineCreditorAccount(context: AccountingContext): string {
+  // Wenn Kreditor bekannt ist und ein Standard-Konto hat
+  if (context.defaultCreditorAccount) {
+    return context.defaultCreditorAccount;
+  }
+
+  // Template-spezifische Kreditorenkonten
+  if (context.template === 'FAMO') {
+    return '1600'; // FAMO-spezifisches Kreditorenkonto
+  }
+  
+  if (context.template === 'SONEPAR') {
+    return '1610'; // Sonepar-spezifisches Kreditorenkonto
+  }
+
+  // Standard-Kreditorenkonto für unbekannte Lieferanten
+  return '1400'; // Verbindlichkeiten aus Lieferungen und Leistungen
+}
+
+/**
+ * Generiert einen aussagekräftigen Buchungstext
+ */
+function generateBookingText(context: AccountingContext, account: SKR03Account): string {
+  const supplier = context.supplierName || 'Unbekannter Lieferant';
+  const accountName = account.name;
+  const date = new Date().toLocaleDateString('de-DE');
+  
+  return `${accountName} - ${supplier} vom ${date}`;
+}
+
+/**
+ * Berechnet die Confidence für den Buchungssatz-Vorschlag
+ */
+function calculateBookingConfidence(context: AccountingContext, account: SKR03Account): number {
+  let confidence = 0;
+  let maxScore = 0;
+
+  // Sachkonto-Matching (40%)
+  maxScore += 40;
+  const keywordMatches = account.keywords.filter(keyword => 
+    context.extractedText.toLowerCase().includes(keyword.toLowerCase())
+  ).length;
+  confidence += Math.min(40, keywordMatches * 10);
+
+  // Kreditor-Identifikation (30%)
+  maxScore += 30;
+  if (context.creditorId) {
+    confidence += 30;
+  } else if (context.supplierName) {
+    confidence += 15;
+  }
+
+  // Template-Erkennung (20%)
+  maxScore += 20;
+  if (context.template && context.template !== 'GENERIC') {
+    confidence += 20;
+  } else if (context.template === 'GENERIC') {
+    confidence += 10;
+  }
+
+  // Betragsinformationen (10%)
+  maxScore += 10;
+  if (context.invoiceAmount > 0) {
+    confidence += 5;
+  }
+  if (context.vatAmount && context.vatRate) {
+    confidence += 5;
+  }
+
+  return maxScore > 0 ? Math.round((confidence / maxScore) * 100) : 0;
+}
+
+/**
+ * Generiert eine Erklärung für den Buchungssatz-Vorschlag
+ */
+function generateBookingExplanation(
+  context: AccountingContext, 
+  account: SKR03Account, 
+  creditorAccount: string
+): string {
+  const explanations: string[] = [];
+  
+  explanations.push(`Sachkonto ${account.code} (${account.name}) basierend auf Rechnungsinhalt`);
+  explanations.push(`Kreditorenkonto ${creditorAccount} für ${context.supplierName || 'Lieferant'}`);
+  
+  if (context.template && context.template !== 'GENERIC') {
+    explanations.push(`${context.template}-Template erkannt`);
+  }
+  
+  if (context.vatRate) {
+    explanations.push(`MwSt.-Satz: ${context.vatRate}%`);
+  }
+
+  return explanations.join(' | ');
+}
+
+/**
+ * Wendet template-spezifische Buchungslogik an
+ */
+function applyTemplateSpecificLogic(proposal: BookingProposal, context: AccountingContext): void {
+  switch (context.template) {
+    case 'FAMO':
+      // FAMO-spezifische Anpassungen
+      if (context.extractedText.toLowerCase().includes('wartung')) {
+        proposal.debitAccount = '6320'; // Instandhaltung
+        proposal.bookingText = `Wartungsarbeiten - FAMO GmbH`;
+      }
+      break;
+      
+    case 'SONEPAR':
+      // Sonepar-spezifische Anpassungen
+      if (context.extractedText.toLowerCase().includes('elektro')) {
+        proposal.debitAccount = '6000'; // Wareneinkauf
+        proposal.bookingText = `Elektromaterial - Sonepar`;
+      }
+      break;
+      
+    default:
+      // Keine spezifischen Anpassungen für generische Templates
+      break;
+  }
+}
+
+/**
+ * Erweiterte Keyword-Suche mit Gewichtung
+ */
+export function suggestSKR03AccountWithWeighting(
+  invoiceText: string, 
+  supplierName?: string,
+  template?: string
+): { account: SKR03Account; score: number } | null {
+  const searchText = `${invoiceText} ${supplierName || ''}`.toLowerCase();
+  
+  const accountScores = SKR03_ACCOUNTS.map(account => {
+    let score = 0;
+    
+    // Grundscore basierend auf Keyword-Matches
+    const keywordMatches = account.keywords.filter(keyword => 
+      searchText.includes(keyword.toLowerCase())
+    );
+    score += keywordMatches.length * 10;
+    
+    // Template-spezifische Gewichtung
+    if (template === 'FAMO' && account.category === 'Instandhaltung') {
+      score += 20;
+    }
+    if (template === 'SONEPAR' && account.category === 'Wareneinkauf') {
+      score += 20;
+    }
+    
+    // Kategorie-Bonus für häufige Geschäftsvorfälle
+    if (['Wareneinkauf', 'Bürobedarf', 'Instandhaltung'].includes(account.category)) {
+      score += 5;
+    }
+    
+    return { account, score };
+  });
+  
+  // Sortiere nach Score und gebe das beste Ergebnis zurück
+  accountScores.sort((a, b) => b.score - a.score);
+  
+  const bestMatch = accountScores[0];
+  return bestMatch.score > 0 ? bestMatch : null;
+}

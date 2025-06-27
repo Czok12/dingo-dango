@@ -60,6 +60,9 @@ model Invoice {
   companyId       String
   company         Company @relation(fields: [companyId], references: [id])
   
+  creditorId      String?
+  creditor        Creditor? @relation(fields: [creditorId], references: [id])
+  
   bookings        Booking[]
   
   createdAt       DateTime @default(now())
@@ -99,8 +102,59 @@ model SKR03Account {
   category    String // Detailkategorie
   isActive    Boolean @default(true)
   
+  // Zusätzliche Felder für erweiterte Kontierung
+  keywords    String? // Komma-getrennte Keywords für automatische Zuordnung
+  parentCode  String? // Übergeordnetes Konto (für Hierarchie)
+  isCreditor  Boolean @default(false) // Ist dies ein Kreditorenkonto?
+  isDebitor   Boolean @default(false) // Ist dies ein Debitorenkonto?
+  
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   
   @@map("skr03_accounts")
+}
+
+// Hochgeladene Dateien
+model UploadedFile {
+  id            String @id @default(cuid())
+  filename      String
+  originalName  String
+  mimeType      String
+  size          Int
+  path          String
+  extractedText String?
+  status        String @default("processing") // processing, completed, error
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  @@map("uploaded_files")
+}
+
+// Kreditoren/Lieferanten
+model Creditor {
+  id              String @id @default(cuid())
+  name            String
+  ustId           String? @unique // USt-IdNr
+  iban            String?
+  address         String?
+  city            String?
+  zipCode         String?
+  country         String?
+  
+  // Kontierung
+  defaultAccount  String? // Standard-Sachkonto für diesen Kreditor
+  paymentTerms    Int? // Zahlungsziel in Tagen
+  
+  // Metadaten
+  isActive        Boolean @default(true)
+  notes           String?
+  
+  // Beziehungen
+  invoices        Invoice[]
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@map("creditors")
 }

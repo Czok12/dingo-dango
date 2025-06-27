@@ -1,16 +1,39 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { writeFile, mkdir } from 'fs/promises';
-import { existsSync } from 'fs';
+import { promises as fs } from 'fs';
 import path from 'path';
 import { PrismaClient } from '@prisma/client';
+import { processInvoice } from '@/services/processing-service';
 
 const prisma = new PrismaClient();
 
+// Temporäres Upload-Verzeichnis erstellen falls es nicht existiert
+const uploadDir = path.join(process.cwd(), 'uploads');
+
+async function ensureUploadDir() {
+  try {
+    await fs.access(uploadDir);
+  } catch {
+    await fs.mkdir(uploadDir, { recursive: true });
+  }
+}
+
+// Unterstützte Dateitypen
+const SUPPORTED_TYPES = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/gif': 'gif',
+  'image/bmp': 'bmp',
+  'image/tiff': 'tiff',
+  'application/pdf': 'pdf'
+};
+
 export async function POST(request: NextRequest) {
   try {
+    await ensureUploadDir();
+    
     const formData = await request.formData();
     const files = formData.getAll('files') as File[];
-
+    
     if (!files || files.length === 0) {
       return NextResponse.json(
         { error: 'Keine Dateien hochgeladen' },
@@ -18,90 +41,118 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const uploadDir = path.join(process.cwd(), 'uploads');
-    
-    // Erstelle Upload-Verzeichnis falls es nicht existiert
-    if (!existsSync(uploadDir)) {
-      await mkdir(uploadDir, { recursive: true });
-    }
+    const processedFiles: Array<{
+      id: string;
+      filename: string;
+      type: string;
+      size: number;
+      status: 'processing' | 'completed' | 'error';
+      extractedText?: string;
+      error?: string;
+    }> = [];
 
-    const results = [];
-
+    // Verarbeite jede Datei
     for (const file of files) {
-      // Validiere Dateityp
-      const allowedTypes = [
-        'application/pdf',
-        'image/png',
-        'image/jpeg',
-        'image/jpg',
-        'image/gif'
-      ];
-
-      if (!allowedTypes.includes(file.type)) {
-        results.push({
+      const fileId = crypto.randomUUID();
+      const fileType = file.type;
+      
+      // Prüfe unterstützte Dateitypen
+      if (!Object.keys(SUPPORTED_TYPES).includes(fileType)) {
+        processedFiles.push({
+          id: fileId,
           filename: file.name,
-          error: 'Dateityp nicht unterstützt'
-        });
-        continue;
-      }
-
-      // Validiere Dateigröße (10MB)
-      if (file.size > 10 * 1024 * 1024) {
-        results.push({
-          filename: file.name,
-          error: 'Datei zu groß (max. 10MB)'
+          type: fileType,
+          size: file.size,
+          status: 'error',
+          error: `Nicht unterstützter Dateityp: ${fileType}`
         });
         continue;
       }
 
       try {
-        // Generiere eindeutigen Dateinamen
-        const timestamp = Date.now();
-        const fileExtension = path.extname(file.name);
-        const filename = `${timestamp}_${Math.random().toString(36).substr(2, 9)}${fileExtension}`;
-        const filePath = path.join(uploadDir, filename);
-
-        // Speichere Datei
+        // Datei temporär speichern
         const buffer = Buffer.from(await file.arrayBuffer());
-        await writeFile(filePath, buffer);
+        const extension = SUPPORTED_TYPES[fileType as keyof typeof SUPPORTED_TYPES];
+        const tempFilePath = path.join(uploadDir, `${fileId}.${extension}`);
+        
+        await fs.writeFile(tempFilePath, buffer);
 
-        // Speichere in Datenbank
-        const invoice = await prisma.invoice.create({
+        // Speichere Datei-Informationen in der Datenbank (erst mal ohne extrahierten Text)
+        await prisma.invoice.create({
           data: {
-            filename,
+            id: fileId,
+            filename: file.name,
             originalName: file.name,
-            filePath,
+            filePath: tempFilePath,
             fileSize: file.size,
-            mimeType: file.type,
-            companyId: 'default-company-id', // TODO: Dynamisch basierend auf User
+            mimeType: fileType,
+            companyId: 'default-company', // TODO: Dynamisch setzen
+            createdAt: new Date(),
+            updatedAt: new Date()
           }
         });
 
-        results.push({
-          id: invoice.id,
+        // Starte die Verarbeitung mit dem Processing-Service
+        const extractedData = await processInvoice(tempFilePath, fileId);
+
+        processedFiles.push({
+          id: fileId,
           filename: file.name,
-          success: true
+          type: fileType,
+          size: file.size,
+          status: 'completed',
+          extractedText: extractedData.extractedText
         });
 
-        // Hier würde normalerweise die OCR-Verarbeitung gestartet
-        // TODO: Queue-System für Hintergrundverarbeitung implementieren
-        
       } catch (error) {
-        console.error('Fehler beim Speichern der Datei:', error);
-        results.push({
+        console.error(`Fehler beim Verarbeiten der Datei ${file.name}:`, error);
+        
+        processedFiles.push({
+          id: fileId,
           filename: file.name,
-          error: 'Fehler beim Speichern der Datei'
+          type: fileType,
+          size: file.size,
+          status: 'error',
+          error: error instanceof Error ? error.message : 'Unbekannter Fehler'
         });
       }
     }
 
-    return NextResponse.json({ results });
+    return NextResponse.json({
+      success: true,
+      message: `${processedFiles.length} Datei(en) verarbeitet`,
+      files: processedFiles
+    });
 
   } catch (error) {
     console.error('Upload-Fehler:', error);
     return NextResponse.json(
-      { error: 'Interner Server-Fehler' },
+      { 
+        error: 'Fehler beim Upload der Dateien',
+        details: error instanceof Error ? error.message : 'Unbekannter Fehler'
+      },
       { status: 500 }
     );
+  }
+}
+
+// Hilfsfunktion zum Aufräumen alter temporärer Dateien (nicht als Route-Export)
+async function cleanupTempFiles() {
+  try {
+    const files = await fs.readdir(uploadDir);
+    const now = Date.now();
+    const maxAge = 24 * 60 * 60 * 1000; // 24 Stunden
+
+    for (const file of files) {
+      const filePath = path.join(uploadDir, file);
+      const stats = await fs.stat(filePath);
+      
+      if (now - stats.mtime.getTime() > maxAge) {
+        await fs.unlink(filePath);
+        console.log(`Temporäre Datei gelöscht: ${file}`);
+      }
+    }
+  } catch (error) {
+    console.error('Fehler beim Aufräumen temporärer Dateien:', error);
   }
 }
