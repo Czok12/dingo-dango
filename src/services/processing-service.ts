@@ -178,24 +178,57 @@ export async function processInvoice(filePath: string, invoiceId: string): Promi
       }
     }
     
-    // Ergebnisse in Datenbank speichern
-    await updateInvoiceWithExtractedData(invoiceId, finalData, creditor, bookingProposal);
+    // Ergebnisse umfassend in Datenbank speichern
+    const processingSteps = [
+      `Text extrahiert: ${extractedText.length} Zeichen`,
+      `Entity Recognition: ${Object.keys(extractedData).length} Felder gefunden`,
+      `Template erkannt: ${templateData.template || 'GENERIC'}`,
+      `Kreditor: ${creditor ? 'Gefunden' : 'Nicht gefunden'}`,
+      `Buchungssatz: ${bookingProposal ? 'Erstellt' : 'Nicht erstellt'}`,
+      `Vertrauenswert: ${finalData.confidence}%`
+    ];
     
-    console.log(`Verarbeitung abgeschlossen für Invoice ID: ${invoiceId}`);
+    const saveResult = await saveProcessingResults(invoiceId, finalData, creditor, bookingProposal, processingSteps);
+    
+    if (!saveResult.success) {
+      throw new Error(`Speichern fehlgeschlagen: ${saveResult.message}`);
+    }
+    
+    console.log(`✅ Verarbeitung vollständig abgeschlossen für Invoice ID: ${invoiceId}`);
+    console.log(`📊 ${saveResult.message}`);
+    
     return finalData;
     
   } catch (error) {
-    console.error(`Fehler bei der Verarbeitung von ${filePath}:`, error);
+    console.error(`❌ Fehler bei der Verarbeitung von ${filePath}:`, error);
     
-    // Fehler in Datenbank speichern
-    await prisma.invoice.update({
-      where: { id: invoiceId },
-      data: {
-        processed: true,
-        processingError: error instanceof Error ? error.message : 'Unbekannter Fehler',
-        updatedAt: new Date()
+    // Umfassende Fehlerbehandlung und Statusaktualisierung
+    try {
+      // Update Invoice mit Fehlerstatus
+      await prisma.invoice.update({
+        where: { id: invoiceId },
+        data: {
+          processed: true,
+          processingError: error instanceof Error ? error.message : 'Unbekannter Verarbeitungsfehler',
+          updatedAt: new Date()
+        }
+      });
+      
+      // Update UploadedFile Status
+      const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
+      if (invoice) {
+        await updateUploadedFileStatus(
+          invoice.filename, 
+          'error', 
+          error instanceof Error ? error.message : 'Verarbeitungsfehler'
+        );
       }
-    });
+      
+      console.log(`❌ Fehlerstatus für Invoice ${invoiceId} in Datenbank gespeichert`);
+      
+    } catch (dbError) {
+      console.error('❌ Zusätzlicher Fehler beim Speichern des Fehlerstatus:', dbError);
+    }
     
     throw error;
   }
@@ -555,7 +588,8 @@ async function updateInvoiceWithExtractedData(
   bookingProposal?: BookingProposal | null
 ): Promise<void> {
   try {
-    await prisma.invoice.update({
+    // Update invoice with all extracted data and mark as completed
+    const updatedInvoice = await prisma.invoice.update({
       where: { id: invoiceId },
       data: {
         supplierName: data.supplierName,
@@ -577,28 +611,92 @@ async function updateInvoiceWithExtractedData(
       }
     });
     
-    // Erstelle Buchungssatz-Vorschlag in separater Tabelle (optional)
-    if (bookingProposal && creditor) {
+    // Erstelle Buchungssatz-Vorschlag in separater Tabelle
+    if (bookingProposal && updatedInvoice) {
       await createBookingEntry(invoiceId, bookingProposal);
     }
     
-    console.log(`Invoice ${invoiceId} erfolgreich mit extrahierten Daten und Buchungssatz aktualisiert`);
+    // Log successful completion with detailed information
+    console.log(`✅ Invoice ${invoiceId} erfolgreich verarbeitet und gespeichert:`);
+    console.log(`   - Lieferant: ${data.supplierName || 'N/A'}`);
+    console.log(`   - Rechnungsnummer: ${data.invoiceNumber || 'N/A'}`);
+    console.log(`   - Betrag: ${data.totalAmount ? data.totalAmount.toFixed(2) + '€' : 'N/A'}`);
+    console.log(`   - Kreditor: ${creditor?.name || 'Nicht gefunden'}`);
+    console.log(`   - Buchungssatz: ${bookingProposal ? `${bookingProposal.debitAccount} an ${bookingProposal.creditAccount}` : 'Nicht erstellt'}`);
+    console.log(`   - Vertrauenswert: ${data.confidence}%`);
+    
+    // Update corresponding UploadedFile status if exists
+    await updateUploadedFileStatus(updatedInvoice.filename, 'completed', null);
     
   } catch (error) {
-    console.error(`Fehler beim Aktualisieren der Invoice ${invoiceId}:`, error);
+    console.error(`❌ Fehler beim Aktualisieren der Invoice ${invoiceId}:`, error);
+    
+    // Try to update with error status
+    try {
+      await prisma.invoice.update({
+        where: { id: invoiceId },
+        data: {
+          processed: true,
+          processingError: error instanceof Error ? error.message : 'Unbekannter Datenbankfehler',
+          updatedAt: new Date()
+        }
+      });
+      
+      // Update corresponding UploadedFile status
+      const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
+      if (invoice) {
+        await updateUploadedFileStatus(invoice.filename, 'error', error instanceof Error ? error.message : 'Datenbankfehler');
+      }
+    } catch (updateError) {
+      console.error('Fehler beim Speichern des Fehlerstatus:', updateError);
+    }
+    
     throw error;
   }
 }
 
 /**
- * Erstellt einen Buchungssatz-Eintrag
+ * Aktualisiert den Status einer hochgeladenen Datei
+ */
+async function updateUploadedFileStatus(
+  filename: string, 
+  status: 'processing' | 'completed' | 'error',
+  errorMessage?: string | null
+): Promise<void> {
+  try {
+    await prisma.uploadedFile.updateMany({
+      where: { filename },
+      data: {
+        status,
+        ...(errorMessage && { extractedText: errorMessage }),
+        updatedAt: new Date()
+      }
+    });
+  } catch (error) {
+    console.error(`Fehler beim Aktualisieren des UploadedFile-Status für ${filename}:`, error);
+    // Nicht kritisch - Verarbeitung fortsetzen
+  }
+}
+
+/**
+ * Erstellt einen Buchungssatz-Eintrag mit umfassenden Daten
  */
 async function createBookingEntry(
   invoiceId: string, 
   proposal: BookingProposal
 ): Promise<void> {
   try {
-    await prisma.booking.create({
+    // Hole die Invoice-Daten für zusätzliche Informationen
+    const invoice = await prisma.invoice.findUnique({
+      where: { id: invoiceId },
+      include: { creditor: true }
+    });
+    
+    if (!invoice) {
+      throw new Error(`Invoice mit ID ${invoiceId} nicht gefunden`);
+    }
+    
+    const bookingEntry = await prisma.booking.create({
       data: {
         bookingDate: new Date(),
         bookingText: proposal.bookingText,
@@ -607,15 +705,73 @@ async function createBookingEntry(
         amount: proposal.amount,
         vatRate: proposal.vatRate,
         invoiceId: invoiceId,
-        companyId: 'default-company', // TODO: Dynamisch setzen
+        companyId: invoice.companyId,
       }
     });
     
-    console.log(`Buchungssatz erstellt: ${proposal.debitAccount} an ${proposal.creditAccount}`);
+    console.log(`✅ Buchungssatz erstellt: ${proposal.debitAccount} an ${proposal.creditAccount}, Betrag: ${proposal.amount.toFixed(2)}€`);
+    console.log(`   - Buchungstext: ${proposal.bookingText}`);
+    console.log(`   - MwSt.-Satz: ${proposal.vatRate || 0}%`);
+    console.log(`   - Buchung-ID: ${bookingEntry.id}`);
+    
+    // Return void as specified in function signature
     
   } catch (error) {
-    console.error('Fehler beim Erstellen des Buchungssatzes:', error);
-    // Nicht kritisch - Verarbeitung fortsetzen
+    console.error('❌ Fehler beim Erstellen des Buchungssatzes:', error);
+    // Nicht kritisch - Verarbeitung fortsetzen, aber Fehler loggen
+    throw new Error(`Buchungssatz-Erstellung fehlgeschlagen: ${error instanceof Error ? error.message : 'Unbekannter Fehler'}`);
+  }
+}
+
+/**
+ * Speichert alle Verarbeitungsschritte und Ergebnisse in der Datenbank
+ */
+export async function saveProcessingResults(
+  invoiceId: string,
+  data: ExtractedInvoiceData,
+  creditor?: CreditorType | null,
+  bookingProposal?: BookingProposal | null,
+  processingSteps?: string[]
+): Promise<{ success: boolean; message: string }> {
+  try {
+    // Speichere die Hauptdaten
+    await updateInvoiceWithExtractedData(invoiceId, data, creditor, bookingProposal);
+    
+    // Optional: Speichere Verarbeitungsschritte als Notizen
+    if (processingSteps && processingSteps.length > 0) {
+      const processingLog = processingSteps.join('\n');
+      await prisma.invoice.update({
+        where: { id: invoiceId },
+        data: {
+          processingError: processingLog // Zweckentfremdung des Felds für Verarbeitungslog
+        }
+      });
+    }
+    
+    // Erstelle Zusammenfassung der gespeicherten Daten
+    const summary = {
+      invoiceId,
+      supplierName: data.supplierName || 'N/A',
+      invoiceNumber: data.invoiceNumber || 'N/A',
+      totalAmount: data.totalAmount || 0,
+      creditorFound: !!creditor,
+      bookingProposalCreated: !!bookingProposal,
+      confidence: data.confidence || 0
+    };
+    
+    console.log('💾 Alle Verarbeitungsergebnisse erfolgreich in Datenbank gespeichert:', summary);
+    
+    return {
+      success: true,
+      message: `Rechnung erfolgreich verarbeitet und gespeichert. Vertrauenswert: ${data.confidence}%`
+    };
+    
+  } catch (error) {
+    console.error('❌ Fehler beim Speichern der Verarbeitungsergebnisse:', error);
+    return {
+      success: false,
+      message: error instanceof Error ? error.message : 'Unbekannter Fehler beim Speichern'
+    };
   }
 }
 
@@ -639,8 +795,7 @@ export async function findCreditorByUStId(ustId: string): Promise<CreditorType |
     const creditor = await prisma.creditor.findFirst({
       where: {
         ustId: {
-          equals: cleanUstId,
-          mode: 'insensitive'
+          equals: cleanUstId
         },
         isActive: true
       }
@@ -655,8 +810,7 @@ export async function findCreditorByUStId(ustId: string): Promise<CreditorType |
     const similarCreditors = await prisma.creditor.findMany({
       where: {
         ustId: {
-          contains: cleanUstId.substring(0, 8), // Ersten 8 Zeichen für ähnliche Suche
-          mode: 'insensitive'
+          contains: cleanUstId.substring(0, 8)
         },
         isActive: true
       }
@@ -706,8 +860,7 @@ export async function findCreditorByMultipleCriteria(
       const creditorByIban = await prisma.creditor.findFirst({
         where: {
           iban: {
-            equals: cleanIban,
-            mode: 'insensitive'
+            equals: cleanIban
           },
           isActive: true
         }
@@ -751,8 +904,7 @@ export async function findCreditorByName(supplierName: string): Promise<Creditor
     const creditor = await prisma.creditor.findFirst({
       where: {
         name: {
-          equals: cleanName,
-          mode: 'insensitive'
+          equals: cleanName
         },
         isActive: true
       }
@@ -767,8 +919,7 @@ export async function findCreditorByName(supplierName: string): Promise<Creditor
     const partialMatches = await prisma.creditor.findMany({
       where: {
         name: {
-          contains: cleanName,
-          mode: 'insensitive'
+          contains: cleanName
         },
         isActive: true
       }
@@ -788,8 +939,7 @@ export async function findCreditorByName(supplierName: string): Promise<Creditor
         const wordMatches = await prisma.creditor.findMany({
           where: {
             name: {
-              contains: word,
-              mode: 'insensitive'
+              contains: word
             },
             isActive: true
           }
@@ -835,11 +985,11 @@ export async function createCreditorFromInvoiceData(
       data: creditorData
     });
     
-    console.log(`Neuer Kreditor erstellt: ${newCreditor.name}`);
+    console.log(`✅ Neuer Kreditor erstellt: ${newCreditor.name}`);
     return newCreditor;
     
   } catch (error) {
-    console.error('Fehler beim Erstellen des Kreditors:', error);
+    console.error('❌ Fehler beim Erstellen des Kreditors:', error);
     return null;
   }
 }
