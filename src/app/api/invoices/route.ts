@@ -38,7 +38,7 @@ export async function GET(request: NextRequest) {
     const maxAmount = parseFloat(searchParams.get('maxAmount') || '999999999');
     
     // Sortierung
-    const sortBy = searchParams.get('sortBy') || 'uploadDate';
+    const sortBy = searchParams.get('sortBy') || 'createdAt';
     const sortOrder = searchParams.get('sortOrder') === 'asc' ? 'asc' : 'desc';
     
     // Prisma Where-Clause aufbauen
@@ -48,15 +48,27 @@ export async function GET(request: NextRequest) {
     // Textsuche
     if (search) {
       whereClause.OR = [
-        { fileName: { contains: search } },
-        { notes: { contains: search } },
+        { filename: { contains: search } },
+        { supplierName: { contains: search } },
+        { invoiceNumber: { contains: search } },
         { creditor: { name: { contains: search } } }
       ];
     }
     
     // Status-Filter
     if (status) {
-      whereClause.status = status;
+      // Mapping zu den echten Feldern
+      if (status === 'uploaded') {
+        whereClause.processed = false;
+        whereClause.processingError = { equals: null };
+      } else if (status === 'processing') {
+        whereClause.processed = false;
+      } else if (status === 'completed') {
+        whereClause.processed = true;
+        whereClause.processingError = { equals: null };
+      } else if (status === 'error') {
+        whereClause.processingError = { not: null };
+      }
     }
     
     // Kreditor-Filter
@@ -106,11 +118,18 @@ export async function GET(request: NextRequest) {
             select: {
               id: true,
               name: true,
-              accountNumber: true,
-              taxNumber: true
+              ustId: true,
+              iban: true,
+              address: true,
+              city: true,
+              zipCode: true,
+              country: true,
+              defaultAccount: true,
+              creditorAccount: true,
+              accountCode: true
             }
           },
-          bookingEntries: {
+          bookings: {
             select: {
               id: true,
               bookingDate: true,
@@ -118,8 +137,7 @@ export async function GET(request: NextRequest) {
               debitAccount: true,
               creditAccount: true,
               amount: true,
-              taxCode: true,
-              costCenter: true
+              vatRate: true
             }
           }
         }
@@ -131,37 +149,49 @@ export async function GET(request: NextRequest) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const formattedInvoices = invoices.map((invoice: any) => ({
       id: invoice.id,
-      fileName: invoice.fileName,
+      fileName: invoice.filename,
+      filename: invoice.filename, // Für Frontend-Kompatibilität
+      originalName: invoice.originalName,
       fileSize: invoice.fileSize,
       mimeType: invoice.mimeType,
-      uploadDate: invoice.uploadDate,
-      status: invoice.status,
+      uploadDate: invoice.createdAt,
+      status: invoice.processingError ? 'error' : 
+              invoice.processed ? 'completed' : 'uploaded',
       
       // Extrahierte Daten
+      supplierName: invoice.supplierName,
+      supplierTaxId: invoice.supplierTaxId,
       invoiceNumber: invoice.invoiceNumber,
       invoiceDate: invoice.invoiceDate,
       dueDate: invoice.dueDate,
       totalAmount: invoice.totalAmount,
       netAmount: invoice.netAmount,
-      taxAmount: invoice.taxAmount,
-      taxRate: invoice.taxRate,
-      currency: invoice.currency,
+      taxAmount: invoice.vatAmount,
+      taxRate: invoice.vatRate,
       
       // Verarbeitung
-      processedAt: invoice.processedAt,
-      errorMessage: invoice.errorMessage,
-      notes: invoice.notes,
+      processed: invoice.processed,
+      processedAt: invoice.updatedAt,
+      errorMessage: invoice.processingError,
+      ocrText: invoice.ocrText,
+      
+      // Kontierung
+      booked: invoice.booked,
+      skr03Account: invoice.skr03Account,
+      bookingText: invoice.bookingText,
       
       // Kreditor
       creditor: invoice.creditor,
       
       // Buchungsvorschläge
-      bookingEntries: invoice.bookingEntries,
+      bookingEntries: invoice.bookings,
+      bookings: invoice.bookings, // Für Frontend-Kompatibilität
+      hasBookings: (invoice.bookings?.length || 0) > 0,
       
       // Statistiken
-      bookingCount: invoice.bookingEntries.length,
+      bookingCount: invoice.bookings?.length || 0,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      totalBookingAmount: invoice.bookingEntries.reduce((sum: number, entry: any) => sum + (entry.amount || 0), 0)
+      totalBookingAmount: invoice.bookings?.reduce((sum: number, entry: any) => sum + (entry.amount || 0), 0) || 0
     }));
     
     // Paginierungs-Metadaten
@@ -173,12 +203,26 @@ export async function GET(request: NextRequest) {
       success: true,
       data: formattedInvoices,
       pagination: {
+        page: page,
         currentPage: page,
         totalPages,
         totalCount,
         pageSize: limit,
         hasNextPage,
         hasPreviousPage
+      },
+      summary: {
+        totalInvoices: totalCount,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        processedInvoices: formattedInvoices.filter((inv: any) => inv.status === 'completed').length,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        errorInvoices: formattedInvoices.filter((inv: any) => inv.status === 'error').length,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        pendingInvoices: formattedInvoices.filter((inv: any) => inv.status === 'uploaded').length,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        totalAmount: formattedInvoices.reduce((sum: number, inv: any) => sum + (inv.totalAmount || 0), 0),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        averageAmount: totalCount > 0 ? formattedInvoices.reduce((sum: number, inv: any) => sum + (inv.totalAmount || 0), 0) / totalCount : 0
       },
       filters: {
         search,
